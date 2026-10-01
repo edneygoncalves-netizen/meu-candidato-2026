@@ -1,0 +1,118 @@
+Consulta Candidatos 2026
+Pesquisa baseada nos dados oficiais da Justiça Eleitoral.
+Estado
+São PauloRio de JaneiroMinas Gerais
+ParanáRio Grande do SulSanta Catarina
+BahiaPernambucoGoiás
+Distrito FederalBrasil (Presidência)
+Cargo
+SenadorDeputado FederalDeputado EstadualGovernadorPresidente
+Nome ou número
+
+Pesquisar candidatos
+
+
+
+Fonte: Tribunal Superior Eleitoral (TSE), DivulgaCandContas/Dados Abertos.
+Os dados podem ser alterados pela Justiça Eleitoral durante o processo eleitoral. Para conferir o registro completo, use o link oficial de cada candidato.
+# Consulta Candidatos 2026 — versão 3
+
+Aplicação mobile-first que consulta candidatos de 2026 usando o endpoint do DivulgaCandContas do TSE através de um intermediário `/api/search`.
+
+## Estrutura
+
+- `index.html` — interface
+- `api/search.js` — função servidor que consulta o TSE
+- `vercel.json` — configuração de deploy
+
+## Deploy
+
+1. Crie uma conta em Vercel.
+2. Crie um novo projeto e envie estes arquivos para um repositório GitHub, ou importe o projeto.
+3. Faça o deploy.
+4. A URL gerada pela Vercel será o endereço público do site.
+
+Não é necessário colocar chave de API.
+
+## Observações
+
+- A fonte de dados é o TSE/DivulgaCandContas.
+- O projeto usa o identificador da eleição de 2026: `20322002026`.
+- O backend aplica cache curto para reduzir chamadas repetidas ao TSE.
+- A versão atual consulta um estado por vez; a opção Brasil é direcionada à Presidência.
+- Para uma busca nacional de Senado/deputados, a próxima evolução é indexar o conjunto CSV oficial do TSE no servidor, em vez de fazer dezenas de consultas ao vivo.
+  "version": 2,
+  "functions": {
+    "api/search.js": {
+      "runtime": "@vercel/node"
+    }
+  }
+}const ELEICAO = "20322002026";
+const ANO = "2026";
+const API = "https://divulgacandcontas.tse.jus.br/divulga/rest/v1";
+
+const region = {
+  AC:"NORTE", AL:"NORDESTE", AP:"NORTE", AM:"NORTE", BA:"NORDESTE", CE:"NORDESTE",
+  DF:"CENTRO-OESTE", ES:"SUDESTE", GO:"CENTRO-OESTE", MA:"NORDESTE", MT:"CENTRO-OESTE",
+  MS:"CENTRO-OESTE", MG:"SUDESTE", PA:"NORTE", PB:"NORDESTE", PR:"SUL", PE:"NORDESTE",
+  PI:"NORDESTE", RJ:"SUDESTE", RN:"NORDESTE", RS:"SUL", RO:"NORTE", RR:"NORTE",
+  SC:"SUL", SP:"SUDESTE", SE:"NORDESTE", TO:"NORTE", BR:"BRASIL"
+};
+
+const cargoName = {1:"Presidente",3:"Governador",5:"Senador",6:"Deputado Federal",7:"Deputado Estadual"};
+
+function norm(s="") {
+  return String(s).normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().trim();
+}
+
+function profileUrl(c, uf) {
+  const u = uf || c.ufCandidatura || "BR";
+  const reg = region[u] || "";
+  return `https://divulgacandcontas.tse.jus.br/divulga/#/candidato/${reg}/${u}/${ELEICAO}/${c.id}/${ANO}/${u}`;
+}
+
+function clean(c, uf) {
+  const partido = c.partido?.nome || c.partido?.sigla || c.partido || "";
+  const cargo = c.cargo?.nome || c.cargo || cargoName[cargoCode(c)] || "";
+  return {
+    id:c.id, nomeUrna:c.nomeUrna, nomeCompleto:c.nomeCompleto, numero:c.numero,
+    partido, cargo, descricaoSituacao:c.descricaoSituacao, ocupacao:c.ocupacao,
+    ufCandidatura:c.ufCandidatura || uf, fotoUrl:c.fotoUrl, dataUltimaAtualizacao:c.dataUltimaAtualizacao,
+    perfilUrl:profileUrl(c, uf)
+  };
+}
+function cargoCode(c){ return c.cargo?.codigo || c.cargo?.codCargo || ""; }
+
+async function getUf(uf,cargo){
+  const url=`${API}/candidatura/listar/${ANO}/${uf}/${ELEICAO}/${cargo}/candidatos`;
+  const r=await fetch(url,{headers:{"Accept":"application/json"}});
+  if(!r.ok) throw new Error(`TSE HTTP ${r.status}`);
+  const data=await r.json();
+  const arr=data.candidatos || data || [];
+  return Array.isArray(arr) ? arr.map(c=>clean(c,uf)) : [];
+}
+
+module.exports = async (req,res)=>{
+  res.setHeader("Cache-Control","s-maxage=300, stale-while-revalidate=600");
+  res.setHeader("Access-Control-Allow-Origin","*");
+  const uf=String(req.query.uf||"SP").toUpperCase();
+  const cargo=String(req.query.cargo||"5");
+  const q=norm(req.query.q||"");
+
+  if(!region[uf]) return res.status(400).json({error:"UF inválida."});
+  if(!["1","3","5","6","7"].includes(cargo)) return res.status(400).json({error:"Cargo inválido."});
+
+  try {
+    let list;
+    if(uf==="BR" || cargo==="1") {
+      list=await getUf("BR",cargo);
+    } else {
+      list=await getUf(uf,cargo);
+    }
+    if(q) list=list.filter(c=>norm(c.nomeUrna).includes(q)||norm(c.nomeCompleto).includes(q)||String(c.numero||"").includes(q));
+    list.sort((a,b)=>norm(a.nomeUrna).localeCompare(norm(b.nomeUrna),"pt-BR"));
+    return res.status(200).json({source:"TSE",ano:ANO,eleicao:ELEICAO,uf,cargo,candidates:list});
+  } catch(e) {
+    return res.status(502).json({error:"Não foi possível consultar o TSE neste momento.",detail:e.message});
+  }
+};
